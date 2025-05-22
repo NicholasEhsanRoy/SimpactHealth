@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Monte Carlo Diagram Editor (jsPlumb)</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jsPlumb/2.15.6/js/jsplumb.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    #controls {
+      padding: 10px;
+      background-color: #f0f0f0;
+      display: flex;
+      gap: 10px;
+    }
+    #canvas {
+      flex: 1;
+      position: relative;
+      background: #fff;
+      overflow: hidden;
+    }
+    .state {
+      position: absolute;
+      padding: 10px;
+      border: 2px solid #333;
+      background: #f9f9f9;
+      border-radius: 8px;
+    }
+    .connector-label {
+      background: white;
+      border: 1px solid black;
+      padding: 2px 5px;
+      font-size: 12px;
+      border-radius: 4px;
+      cursor: move;
+    }
+    .connector-handle {
+      width: 10px;
+      height: 10px;
+      background: #000;
+      border-radius: 50%;
+      position: absolute;
+      top: 50%;
+      right: -5px;
+      transform: translateY(-50%);
+      cursor: crosshair;
+    }
+    .delete-btn {
+      position: absolute;
+      top: -10px;
+      right: -10px;
+      background: red;
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 20px;
+      height: 20px;
+      font-size: 12px;
+      line-height: 18px;
+      text-align: center;
+      cursor: pointer;
+    }
+    .midpoint {
+      width: 10px;
+      height: 10px;
+      background: blue;
+      border-radius: 50%;
+      position: absolute;
+      z-index: 10;
+      cursor: move;
+    }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <button onclick="addState()">Add State</button>
+    <button onclick="exportYAML()">Export YAML</button>
+  </div>
+  <div id="canvas"></div>
+
+  <script>
+    const instance = jsPlumb.getInstance({
+      Connector: "Straight",
+      Endpoint: "Dot",
+      Anchor: "Continuous",
+      PaintStyle: { stroke: "#456", strokeWidth: 2 },
+      EndpointStyle: { fill: "#456", radius: 4 },
+      ConnectionOverlays: [["Arrow", { location: 1, width: 10, length: 10 }]],
+      ConnectionsDetachable: true,
+      ReattachConnections: true
+    });
+
+    let stateCounter = 0;
+    const states = {};
+    const connectionsData = [];
+
+    function addState() {
+      const stateId = `state${stateCounter++}`;
+      const div = document.createElement("div");
+      div.className = "state";
+      div.id = stateId;
+      div.style.left = `${100 + stateCounter * 20}px`;
+      div.style.top = `${100 + stateCounter * 20}px`;
+      div.innerHTML = `
+        <input type="text" value="State ${stateCounter}" onchange="states['${stateId}'] = this.value">
+        <div class="connector-handle" data-state="${stateId}"></div>
+        <button class="delete-btn" onclick="deleteState('${stateId}')">&times;</button>
+      `;
+      document.getElementById("canvas").appendChild(div);
+      states[stateId] = `State ${stateCounter}`;
+      instance.draggable(div, { grid: [20, 20] });
+
+      instance.makeTarget(div, {
+        anchor: "Continuous",
+        allowLoopback: true
+      });
+
+      const handle = div.querySelector(".connector-handle");
+      instance.makeSource(handle, {
+        parent: div,
+        anchor: "Continuous",
+        allowLoopback: true,
+        maxConnections: -1
+      });
+    }
+
+    function deleteState(id) {
+      const el = document.getElementById(id);
+      instance.remove(el);
+      delete states[id];
+    }
+
+    instance.bind("connection", function(info) {
+      const labelDiv = document.createElement("div");
+      labelDiv.className = "connector-label";
+      labelDiv.contentEditable = true;
+      labelDiv.innerText = "0.1";
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.innerText = "×";
+      deleteBtn.className = "delete-btn";
+      deleteBtn.onclick = () => {
+        instance.deleteConnection(info.connection);
+      };
+
+      const midpoint = document.createElement("div");
+      midpoint.className = "midpoint";
+      midpoint.id = `mid-${Date.now()}`;
+      document.getElementById("canvas").appendChild(midpoint);
+      instance.draggable(midpoint);
+
+      // Position midpoint
+      const src = document.getElementById(info.sourceId).getBoundingClientRect();
+      const tgt = document.getElementById(info.targetId).getBoundingClientRect();
+      const canvasRect = document.getElementById("canvas").getBoundingClientRect();
+      const midX = ((src.left + src.right) / 2 + (tgt.left + tgt.right) / 2) / 2 - canvasRect.left;
+      const midY = ((src.top + src.bottom) / 2 + (tgt.top + tgt.bottom) / 2) / 2 - canvasRect.top;
+      midpoint.style.left = `${midX}px`;
+      midpoint.style.top = `${midY}px`;
+
+      const midId = midpoint.id;
+
+      // Connect source → midpoint and midpoint → target
+      const conn1 = instance.connect({ source: info.sourceId, target: midId });
+      const conn2 = instance.connect({ source: midId, target: info.targetId });
+
+      conn2.addOverlay(["Custom", { create: () => labelDiv, location: 0.5, id: "label" }]);
+      conn2.addOverlay(["Custom", { create: () => deleteBtn, location: 0.1 }]);
+
+      connectionsData.push(conn2);
+      instance.deleteConnection(info.connection);
+    });
+
+    function exportYAML() {
+      const stateList = Object.entries(states).map(([id, name]) => ({ id, name }));
+      const transitions = connectionsData.map(conn => {
+        const from = conn.sourceId;
+        const to = conn.targetId;
+        if (!states[from] || !states[to]) return null;
+        const overlay = conn.getOverlay("label");
+        const labelEl = overlay && overlay.getElement ? overlay.getElement() : null;
+        const probability = labelEl ? parseFloat(labelEl.innerText) : 0.1;
+        return { from: states[from], to: states[to], probability };
+      }).filter(t => t !== null);
+
+      const yaml = jsyaml.dump({ states: stateList, transitions });
+      const blob = new Blob([yaml], { type: 'application/x-yaml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'model.yaml';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    window.onload = () => {
+      instance.setContainer("canvas");
+    };
+  </script>
+</body>
+</html>
