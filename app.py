@@ -25,14 +25,31 @@ for side in ("show_left", "show_right"):
 
 if 'transitions_list' not in st.session_state:
     st.session_state.transitions_list = [
-        {"source": "Alive", "target": "Dead", "probability": 1.0}
+        {"source": "Healthy", "target": "Dead", "probability": 1.0}
     ]
+if 'draw_model_name' not in st.session_state:
+    st.session_state.draw_model_name = "My Simulation Model"
+if 'draw_num_patients' not in st.session_state:
+    st.session_state.draw_num_patients = 1000
+if 'timestep_unit' not in st.session_state:
+    st.session_state.timestep_unit = "Week" # Default timestep unit
+if 'selected_config_to_load' not in st.session_state: # For the new loading button logic
+    st.session_state.selected_config_to_load = ""
+if 'uploaded_parsed_config' not in st.session_state: # To store parsed but not yet applied config
+    st.session_state.uploaded_parsed_config = None
+if 'uploaded_file_name' not in st.session_state:
+    st.session_state.uploaded_file_name = None
+
 
 # For simulation page
 if 'loaded_config_name' not in st.session_state:
     st.session_state.loaded_config_name = None
+if 'loaded_config_data' not in st.session_state: # Store full config data
+    st.session_state.loaded_config_data = {}
 if 'sim_results_df' not in st.session_state:
     st.session_state.sim_results_df = None
+if 'custom_result_name' not in st.session_state:
+    st.session_state.custom_result_name = ""
 
 # --- Helper Functions for File Operations ---
 def ensure_dir(directory):
@@ -40,12 +57,12 @@ def ensure_dir(directory):
     if not os.path.exists(directory):
         os.makedirs(directory)
 
-def save_config(config_name, transitions_data):
-    """Saves the transitions data as a YAML file."""
+def save_config(config_name, config_data): # Now accepts a dictionary
+    """Saves the configuration data as a YAML file."""
     ensure_dir(CONFIGS_DIR)
     file_path = os.path.join(CONFIGS_DIR, f"{config_name}.yaml")
     with open(file_path, 'w') as f:
-        yaml.dump(transitions_data, f, default_flow_style=False)
+        yaml.dump(config_data, f, default_flow_style=False)
     st.success(f"Configuration '{config_name}' saved successfully!")
 
 def load_config(config_name):
@@ -63,10 +80,20 @@ def get_available_configs():
     return [f.replace('.yaml', '') for f in os.listdir(CONFIGS_DIR) if f.endswith('.yaml')]
 
 def save_results(results_df, filename_prefix="simulation_results"):
-    """Saves simulation results to a CSV file."""
+    """
+    Saves simulation results to a CSV file.
+    Uses custom_result_name as filename if provided, otherwise uses a timestamped default.
+    """
     ensure_dir(RESULTS_DIR)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_name = f"{filename_prefix}_{timestamp}.csv"
+    
+    # If custom name is provided and is not empty, use it directly (without timestamp)
+    if st.session_state.custom_result_name.strip():
+        file_name = f"{st.session_state.custom_result_name}.csv"
+    else:
+        # If no custom name, use default prefix + timestamp
+        file_name = f"{filename_prefix}_{timestamp}.csv"
+
     file_path = os.path.join(RESULTS_DIR, file_name)
     results_df.to_csv(file_path, index=False)
     st.success(f"Simulation results saved to '{file_name}' in '{RESULTS_DIR}'!")
@@ -87,8 +114,6 @@ def get_available_results():
 # --- Graphviz DOT Generation Function ---
 def generate_graphviz_dot(transitions, current_populations, initial_num_patients):
     """Generates a Graphviz DOT string for the simulation model with current populations."""
-    # Changed 'rankdir' to 'LR' for Left-Right (horizontal) layout.
-    # Removed 'overlap' and 'splines' to let Graphviz use its defaults for potentially cleaner routing.
     dot = graphviz.Digraph(
         comment='Simulation Model',
         graph_attr={
@@ -107,11 +132,11 @@ def generate_graphviz_dot(transitions, current_populations, initial_num_patients
     # Add 'Start' node (conceptual, no population)
     dot.node('Start', label='Start')
 
-    # Add 'Alive' node with initial population
-    dot.node('Alive', label=f'Alive\n({current_populations.get("Alive", 0)} patients)')
+    # Add 'Healthy' node with initial population
+    dot.node('Healthy', label=f'Healthy\n({current_populations.get("Healthy", 0)} patients)')
 
-    # Add fixed transition from Start to Alive
-    dot.edge('Start', 'Alive', label=str(initial_num_patients))
+    # Add fixed transition from Start to Healthy
+    dot.edge('Start', 'Healthy', label=str(initial_num_patients))
 
     # Add other nodes and edges based on transitions_list
     all_nodes_in_transitions = set()
@@ -120,7 +145,7 @@ def generate_graphviz_dot(transitions, current_populations, initial_num_patients
         all_nodes_in_transitions.add(t["target"])
 
     for node_name in all_nodes_in_transitions:
-        if node_name not in ['Start', 'Alive']:
+        if node_name not in ['Start', 'Healthy']:
             dot.node(node_name, label=f'{node_name}\n({current_populations.get(node_name, 0)} patients)')
 
     for t in transitions:
@@ -128,11 +153,10 @@ def generate_graphviz_dot(transitions, current_populations, initial_num_patients
         target_node = t["target"]
         probability = t["probability"]
 
-        # This block is mostly redundant if all_nodes_in_transitions covers all, but kept for robustness
-        if source_node not in dot.body and source_node != 'Start' and source_node != 'Alive':
+        if source_node not in dot.body and source_node != 'Start' and source_node != 'Healthy':
              dot.node(source_node, label=f'{source_node}\n({current_populations.get(source_node, 0)} patients)')
-        if target_node not in dot.body and target_node != 'Start' and target_node != 'Alive':
-             dot.node(target_node, label=f'{target_node}\n({current_populations.get(target_node, 0)} patients)')
+        if target_node not in dot.body and target_node != 'Start' and target_node != 'Healthy':
+             dot.node(target_node, label=f'{current_populations.get(target_node, 0)} patients)')
 
         dot.edge(source_node, target_node, label=str(probability))
 
@@ -152,8 +176,165 @@ def remove_last_transition_row():
     if st.session_state.transitions_list:
         st.session_state.transitions_list.pop()
 
+def load_config_into_draw_action(): # This function is now called by a button
+    """Loads a selected configuration into the 'Draw' tab's UI elements."""
+    config_name = st.session_state.load_config_draw_selector_value # Get value from selectbox
+    if config_name:
+        loaded_data = load_config(config_name)
+        if loaded_data:
+            if isinstance(loaded_data, dict):
+                st.session_state.draw_model_name = loaded_data.get("model_name", "My Simulation Model")
+                st.session_state.draw_num_patients = loaded_data.get("initial_patients", 1000)
+                st.session_state.transitions_list = loaded_data.get("transitions", [{"source": "Healthy", "target": "Dead", "probability": 1.0}])
+                st.session_state.timestep_unit = loaded_data.get("timestep_unit", "Week")
+            elif isinstance(loaded_data, list):
+                st.warning("Loaded an old configuration format. Defaulting model name, people, and timestep.")
+                st.session_state.draw_model_name = "My Simulation Model"
+                st.session_state.draw_num_patients = 1000
+                st.session_state.transitions_list = loaded_data
+                st.session_state.timestep_unit = "Week"
+            
+            st.success(f"Configuration '{config_name}' loaded into Draw tab.")
+            st.rerun() # Rerun to update the UI with loaded data
+        else:
+            st.error(f"Failed to load configuration '{config_name}'.")
+    else:
+        st.warning("Please select a configuration to load.")
+
+def validate_config_data(data):
+    """
+    Validates the structure and content of the loaded configuration data.
+    Returns (True, "Success message") or (False, "Error message").
+    """
+    if not isinstance(data, dict):
+        return False, "Invalid configuration format: Expected a dictionary."
+
+    required_keys = {
+        "model_name": str,
+        "initial_patients": (int, float),
+        "transitions": list,
+        "timestep_unit": str
+    }
+
+    for key, expected_type in required_keys.items():
+        if key not in data:
+            return False, f"Missing required key: '{key}' in configuration."
+        if not isinstance(data[key], expected_type):
+            return False, f"Invalid type for key '{key}': Expected {expected_type}, got {type(data[key])}."
+
+    # Specific validation for transitions
+    if not data["transitions"]:
+        return True, "Configuration valid (no transitions defined)." # Allow empty transitions for initial setup
+
+    for i, transition in enumerate(data["transitions"]):
+        if not isinstance(transition, dict):
+            return False, f"Invalid transition format at index {i}: Expected a dictionary, got {type(transition)}."
+        
+        if "source" not in transition or not isinstance(transition["source"], str):
+            return False, f"Invalid 'source' in transition at index {i}: Expected string."
+        if "target" not in transition or not isinstance(transition["target"], str):
+            return False, f"Invalid 'target' in transition at index {i}: Expected string."
+        if "probability" not in transition or not isinstance(transition["probability"], (int, float)):
+            return False, f"Invalid 'probability' in transition at index {i}: Expected number."
+        if not (0.0 <= transition["probability"] <= 1.0):
+            return False, f"Invalid 'probability' in transition at index {i}: Must be between 0.0 and 1.0."
+            
+    # Check for valid timestep unit
+    valid_timestep_units = ["Year", "Month", "Week", "Day"]
+    if data["timestep_unit"] not in valid_timestep_units:
+        return False, f"Invalid 'timestep_unit': Expected one of {valid_timestep_units}, got '{data['timestep_unit']}'."
+
+    return True, "Configuration is valid."
+
+def handle_uploaded_file():
+    """Reads the uploaded file and stores parsed data in session state for later application."""
+    uploaded_file = st.session_state.uploaded_config_file
+    if uploaded_file is not None:
+        try:
+            file_content = uploaded_file.getvalue().decode("utf-8")
+            loaded_data = yaml.safe_load(file_content)
+            
+            # Store parsed data and original file name
+            st.session_state.uploaded_parsed_config = loaded_data
+            st.session_state.uploaded_file_name = uploaded_file.name
+            st.info(f"File '{uploaded_file.name}' uploaded and parsed. Click 'Apply Uploaded Config' to load it.")
+        except yaml.YAMLError as e:
+            st.error(f"Error parsing YAML file: {e}. Please ensure it's a valid YAML format.")
+            st.session_state.uploaded_parsed_config = None # Clear on error
+            st.session_state.uploaded_file_name = None
+        except Exception as e:
+            st.error(f"An unexpected error occurred during file processing: {e}")
+            st.session_state.uploaded_parsed_config = None
+            st.session_state.uploaded_file_name = None
+    else:
+        st.session_state.uploaded_parsed_config = None # Clear if file is deselected
+        st.session_state.uploaded_file_name = None
+
+def apply_uploaded_config_action():
+    """Applies the parsed uploaded configuration to the app's state."""
+    if st.session_state.uploaded_parsed_config is not None:
+        valid, message = validate_config_data(st.session_state.uploaded_parsed_config)
+        if valid:
+            config_data = st.session_state.uploaded_parsed_config
+            if isinstance(config_data, dict):
+                st.session_state.draw_model_name = config_data.get("model_name", "My Uploaded Model")
+                st.session_state.draw_num_patients = config_data.get("initial_patients", 1000)
+                st.session_state.transitions_list = config_data.get("transitions", [{"source": "Healthy", "target": "Dead", "probability": 1.0}])
+                st.session_state.timestep_unit = config_data.get("timestep_unit", "Week")
+                st.success(f"Configuration from '{st.session_state.uploaded_file_name}' applied successfully!")
+            elif isinstance(config_data, list):
+                st.warning("Uploaded an old configuration format (list of transitions). Defaulting model name, people, and timestep.")
+                st.session_state.draw_model_name = "My Uploaded Model"
+                st.session_state.draw_num_patients = 1000
+                st.session_state.transitions_list = config_data
+                st.session_state.timestep_unit = "Week"
+                st.success(f"Configuration from '{st.session_state.uploaded_file_name}' applied successfully!")
+            
+            # Clear uploaded config data after applying
+            st.session_state.uploaded_parsed_config = None
+            st.session_state.uploaded_file_name = None
+            st.rerun()
+        else:
+            st.error(f"Uploaded configuration is invalid: {message}")
+    else:
+        st.warning("No file uploaded or parsed yet to apply.")
+
+
 # --- Main Application Logic ---
 if page == "Draw":
+    # --- Mermaid Code Generation (moved to global scope within Draw page) ---
+    mermaid_lines = ["graph TD"]
+    mermaid_lines.append(f'    Start -- [{st.session_state.draw_num_patients}] --> Healthy;')
+
+    probabilities_by_source = {}
+    
+    # Initialize with a default if no transitions to avoid errors before user input
+    user_mermaid_code = "graph TD\n    No_Transitions_Yet; " 
+
+    if st.session_state.transitions_list:
+        for transition in st.session_state.transitions_list:
+            source = transition.get("source")
+            target = transition.get("target")
+            probability = transition.get("probability")
+
+            if not source or not target:
+                continue
+
+            arrow_label = ""
+            if isinstance(probability, (int, float)):
+                arrow_label = f' -- [{probability}] -->'
+            else:
+                arrow_label = " -->"
+
+            mermaid_lines.append(f'    {source} {arrow_label} {target};')
+
+            if isinstance(probability, (int, float)):
+                if source not in probabilities_by_source:
+                    probabilities_by_source[source] = []
+                probabilities_by_source[source].append(probability)
+        user_mermaid_code = "\n".join(mermaid_lines)
+
+
     # --- Panel Toggle Buttons ---
     l, r = st.columns(2)
     with l:
@@ -176,14 +357,102 @@ if page == "Draw":
     if st.session_state.show_left:
         with col_left:
             st.subheader("🛠 Diagram Configuration")
-            gui, yaml_tab = st.tabs(["Mermaid Editor", "Setup YAML"])
+            # Create three tabs: Setup, Mermaid Editor, YAML
+            setup_tab, gui_tab, yaml_tab = st.tabs(["Setup", "Mermaid Editor", "YAML"])
 
-            with gui:
-                st.text_input("Model Name", value="My Simulation Model", key="draw_model_name")
-                num_patients = st.number_input("Initial Number of Patients", min_value=1, value=1000, key="draw_num_patients")
-
+            with setup_tab:
+                st.subheader("⚙️ Simulation Setup")
+                
+                # Upload Configuration
+                st.markdown("---")
+                st.subheader("⬆️ Upload Configuration (YAML)")
+                st.file_uploader(
+                    "Choose a YAML file",
+                    type=["yaml", "yml"],
+                    key="uploaded_config_file",
+                    on_change=handle_uploaded_file # Trigger handling on file change
+                )
+                if st.session_state.uploaded_parsed_config is not None:
+                    if st.button("Apply Uploaded Config", key="apply_uploaded_config_btn"):
+                        apply_uploaded_config_action()
+                
+                st.markdown("---")
+                
+                # Load Existing Configuration
+                st.subheader("📂 Load Existing Configuration")
+                available_configs_for_draw = get_available_configs()
+                load_col, button_col = st.columns([0.7, 0.3])
+                with load_col:
+                    if available_configs_for_draw:
+                        st.selectbox(
+                            "Select a saved configuration:",
+                            options=[""] + available_configs_for_draw,
+                            key="load_config_draw_selector_value" # Changed key to avoid direct on_change trigger
+                        )
+                    else:
+                        st.info("No saved configurations found. Create and save one below.")
+                with button_col:
+                    st.write("") # Spacer for alignment
+                    st.write("") # Spacer for alignment
+                    st.button("Load Config", on_click=load_config_into_draw_action)
+                
                 st.markdown("---")
 
+                # Rely on session state for value and remove default 'value' and 'index' parameters
+                st.text_input("Model Name", key="draw_model_name")
+                st.number_input("Initial Number of People", min_value=1, key="draw_num_patients")
+                
+                st.selectbox(
+                    "Timestep Unit",
+                    options=["Year", "Month", "Week", "Day"],
+                    key="timestep_unit"
+                )
+
+                # --- Save Configuration ---
+                st.markdown("---")
+                st.subheader("💾 Save Configuration")
+                config_save_name = st.text_input("Configuration Name", key="config_save_name")
+                save_button_clicked = st.button("Save Configuration", key="save_config_btn")
+
+                if save_button_clicked and config_save_name:
+                    config_data_to_save = {
+                        "model_name": st.session_state.draw_model_name,
+                        "initial_patients": st.session_state.draw_num_patients,
+                        "transitions": st.session_state.transitions_list,
+                        "timestep_unit": st.session_state.timestep_unit
+                    }
+                    if config_save_name + ".yaml" in os.listdir(CONFIGS_DIR):
+                        st.warning(f"Configuration '{config_save_name}' already exists.")
+                        overwrite_confirm = st.checkbox("Overwrite existing configuration?", key="overwrite_config")
+                        if overwrite_confirm:
+                            save_config(config_save_name, config_data_to_save)
+                            st.session_state.overwrite_confirmed = True # Set a flag
+                            st.rerun() # Rerun to clear checkbox
+                    else:
+                        save_config(config_save_name, config_data_to_save)
+                        st.session_state.overwrite_confirmed = False # Reset flag
+                        st.rerun() # Rerun to clear input
+                elif save_button_clicked and not config_save_name:
+                    st.error("Please enter a configuration name.")
+                
+                st.markdown("---")
+                st.subheader("⬇️ Download Configuration")
+                current_config_data = {
+                    "model_name": st.session_state.draw_model_name,
+                    "initial_patients": st.session_state.draw_num_patients,
+                    "transitions": st.session_state.transitions_list,
+                    "timestep_unit": st.session_state.timestep_unit
+                }
+                st.download_button(
+                    label="Download Current Configuration (YAML)",
+                    data=yaml.dump(current_config_data, default_flow_style=False),
+                    file_name=f"{st.session_state.draw_model_name.replace(' ', '_').lower()}_config.yaml",
+                    mime="text/yaml",
+                    help="Download the currently defined configuration as a YAML file."
+                )
+
+
+            with gui_tab: # This is the Mermaid Editor tab
                 st.subheader("✍️ Define Custom Transitions")
                 st.write("Add rows to define custom nodes and arrows. Probabilities for outgoing arrows from a node should sum to 1.0.")
 
@@ -226,37 +495,6 @@ if page == "Draw":
                     st.button("➖ Remove Last", on_click=remove_last_transition_row)
 
 
-                # --- Generate Mermaid Code from Structured Data ---
-                mermaid_lines = ["graph TD"]
-                mermaid_lines.append(f'    Start -- [{num_patients}] --> Alive;')
-
-                probabilities_by_source = {}
-                user_mermaid_code = "graph TD\n    No_Transitions_Yet; "
-
-                if st.session_state.transitions_list:
-                    for transition in st.session_state.transitions_list:
-                        source = transition.get("source")
-                        target = transition.get("target")
-                        probability = transition.get("probability")
-
-                        if not source or not target:
-                            continue
-
-                        arrow_label = ""
-                        if isinstance(probability, (int, float)):
-                            arrow_label = f' -- [{probability}] -->'
-                        else:
-                            arrow_label = " -->"
-
-                        mermaid_lines.append(f'    {source} {arrow_label} {target};')
-
-                        if isinstance(probability, (int, float)):
-                            if source not in probabilities_by_source:
-                                probabilities_by_source[source] = []
-                            probabilities_by_source[source].append(probability)
-                    user_mermaid_code = "\n".join(mermaid_lines)
-
-
                 # --- Validation Check for Probabilities ---
                 st.markdown("---")
                 st.subheader("⚠️ Validation Warnings")
@@ -268,40 +506,20 @@ if page == "Draw":
                         has_warnings = True
                 if not has_warnings:
                     st.success("All probabilities sum to 1.0 (or no probabilities found).")
+                
+                # Removed duplicate download button from here
 
-                # --- Save Configuration ---
-                st.markdown("---")
-                st.subheader("💾 Save Configuration")
-                config_save_name = st.text_input("Configuration Name", key="config_save_name")
-                save_button_clicked = st.button("Save Configuration", key="save_config_btn")
-
-                if save_button_clicked and config_save_name:
-                    if config_save_name + ".yaml" in os.listdir(CONFIGS_DIR):
-                        st.warning(f"Configuration '{config_save_name}' already exists.")
-                        overwrite_confirm = st.checkbox("Overwrite existing configuration?", key="overwrite_config")
-                        if overwrite_confirm:
-                            save_config(config_save_name, st.session_state.transitions_list)
-                            st.session_state.overwrite_confirmed = True # Set a flag
-                            st.rerun() # Rerun to clear checkbox
-                    else:
-                        save_config(config_save_name, st.session_state.transitions_list)
-                        st.session_state.overwrite_confirmed = False # Reset flag
-                        st.rerun() # Rerun to clear input
-                elif save_button_clicked and not config_save_name:
-                    st.error("Please enter a configuration name.")
-
-
-                st.download_button(
-                    label="Download Generated Mermaid Code",
-                    data=user_mermaid_code,
-                    file_name="my_generated_diagram.mmd",
-                    mime="text/plain",
-                    help="Download the Mermaid diagram code generated from the table."
-                )
 
             with yaml_tab:
                 st.subheader("📄 Diagram Data in YAML Format")
-                st.code(yaml.dump(st.session_state.transitions_list, default_flow_style=False), language="yaml", height=500)
+                # Display the data that would be saved
+                display_config_data = {
+                    "model_name": st.session_state.draw_model_name,
+                    "initial_patients": st.session_state.draw_num_patients,
+                    "transitions": st.session_state.transitions_list,
+                    "timestep_unit": st.session_state.timestep_unit
+                }
+                st.code(yaml.dump(display_config_data, default_flow_style=False), language="yaml", height=500)
                 st.info("This YAML dynamically reflects the data from the custom transitions input.")
 
     # --- Right Panel: Live Diagram Preview ---
@@ -367,7 +585,7 @@ elif page == "Simulate":
             if selected_config:
                 loaded_data = load_config(selected_config)
                 if loaded_data:
-                    st.session_state.loaded_transitions = loaded_data # Store loaded data
+                    st.session_state.loaded_config_data = loaded_data # Store full config data
                     st.session_state.loaded_config_name = selected_config
                     st.success(f"Configuration '{selected_config}' loaded successfully!")
                     st.subheader("Loaded Configuration Details (YAML):")
@@ -384,11 +602,30 @@ elif page == "Simulate":
         if st.session_state.loaded_config_name:
             st.info(f"Using configuration: **{st.session_state.loaded_config_name}**")
             
-            # Simulation parameters
-            sim_initial_patients = st.number_input("Initial Patients for Simulation", min_value=1, value=1000, key="sim_initial_patients")
+            # Simulation parameters loaded from config, with ability to override
+            st.text_input(
+                "Custom Results File Name (optional)",
+                value=st.session_state.custom_result_name,
+                key="custom_result_name",
+                help="Enter a name for your results file. If left empty, a default name with timestamp will be used."
+            )
+
+            sim_initial_patients = st.number_input(
+                "Initial Number of People for Simulation", # Changed label
+                min_value=1,
+                value=st.session_state.loaded_config_data.get("initial_patients", 1000),
+                key="sim_initial_patients"
+            )
             sim_steps = st.number_input("Number of Simulation Steps (Time Units)", min_value=1, value=10, key="sim_steps")
             sim_speed = st.slider("Simulation Speed (seconds per step)", min_value=0.0, max_value=1.0, value=0.1, step=0.05, key="sim_speed")
             
+            sim_timestep_unit = st.selectbox(
+                "Timestep Unit",
+                options=["Year", "Month", "Week", "Day"],
+                key="sim_timestep_unit",
+                index=["Year", "Month", "Week", "Day"].index(st.session_state.loaded_config_data.get("timestep_unit", "Week"))
+            )
+
             run_simulation_button = st.button("Start Simulation", key="run_simulation_btn")
 
             if run_simulation_button:
@@ -396,14 +633,16 @@ elif page == "Simulate":
                 st.subheader("Live Simulation Progress")
                 
                 # Determine all unique states involved in the transitions
+                # Use transitions from loaded_config_data
+                sim_transitions = st.session_state.loaded_config_data.get("transitions", [])
                 all_sim_nodes = set()
-                for t in st.session_state.loaded_transitions:
+                for t in sim_transitions:
                     all_sim_nodes.add(t["source"])
                     all_sim_nodes.add(t["target"])
                 
                 # Initialize state populations
                 current_populations = {node: 0 for node in all_sim_nodes}
-                current_populations['Alive'] = sim_initial_patients # Assume 'Alive' is the initial state from 'Start' node
+                current_populations['Healthy'] = sim_initial_patients # Assume 'Healthy' is the initial state from 'Start' node
                 if 'Start' in current_populations: # 'Start' is conceptual for the diagram, remove from population tracking
                     del current_populations['Start']
                 
@@ -412,7 +651,8 @@ elif page == "Simulate":
 
                 # Create a DataFrame to store historical populations
                 history_df = pd.DataFrame(columns=['Step'] + sorted_sim_nodes)
-                history_df.loc[0] = [0] + [current_populations[s] for s in sorted_sim_nodes]
+                # First step:
+                history_df.loc[0] = [f"{sim_timestep_unit} 0"] + [current_populations[s] for s in sorted_sim_nodes]
 
 
                 progress_bar = st.progress(0)
@@ -428,7 +668,7 @@ elif page == "Simulate":
                     inflows_per_state = {node: 0 for node in sorted_sim_nodes}
                     outflows_per_state = {node: 0 for node in sorted_sim_nodes}
 
-                    for transition in st.session_state.loaded_transitions:
+                    for transition in sim_transitions: # Use sim_transitions from loaded config
                         source = transition["source"]
                         target = transition["target"]
                         probability = transition["probability"]
@@ -446,16 +686,16 @@ elif page == "Simulate":
 
                     current_populations = new_populations # Update populations for next step
 
-                    # Update history
-                    history_df.loc[step] = [step] + [current_populations[s] for s in sorted_sim_nodes]
+                    # Update history - format step string
+                    history_df.loc[step] = [f"{sim_timestep_unit} {step}"] + [current_populations[s] for s in sorted_sim_nodes]
                     
                     # Update UI
                     progress_bar.progress(step / sim_steps)
-                    status_text.text(f"Simulating Step {step}/{sim_steps}...")
+                    status_text.text(f"Simulating Step {step}/{sim_steps} ({sim_timestep_unit} per step)...")
                     
                     # Generate and update Graphviz diagram in the placeholder
                     dot_source = generate_graphviz_dot(
-                        transitions=st.session_state.loaded_transitions,
+                        transitions=sim_transitions, # Use sim_transitions
                         current_populations=current_populations,
                         initial_num_patients=sim_initial_patients
                     )
@@ -466,7 +706,7 @@ elif page == "Simulate":
 
                 status_text.success("Simulation Complete!")
                 st.session_state.sim_results_df = history_df # Store final results
-                saved_file_name = save_results(history_df, filename_prefix=f"{st.session_state.loaded_config_name}_sim_results")
+                saved_file_name = save_results(history_df) # Pass custom name implicitly
                 
                 st.markdown(f"**Final State Populations:**")
                 st.dataframe(pd.DataFrame([current_populations]))
@@ -481,7 +721,7 @@ elif page == "Simulate":
         if available_results:
             selected_result_file = st.selectbox(
                 "Select a results file to inspect:",
-                options=[""] + available_configs,
+                options=[""] + available_results,
                 key="inspect_results_selector"
             )
             if selected_result_file:
