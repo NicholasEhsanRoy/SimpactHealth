@@ -1,6 +1,15 @@
 import streamlit as st
 import streamlit.components.v1 as components
 import yaml
+import os
+import pandas as pd
+from datetime import datetime
+import time # For simulation speed control
+import graphviz # Import graphviz for drawing simulation flow
+
+# --- Constants for File Paths ---
+CONFIGS_DIR = ".configs"
+RESULTS_DIR = ".results"
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(layout="wide", page_title="SimpactHealth")
@@ -14,11 +23,120 @@ for side in ("show_left", "show_right"):
     if side not in st.session_state:
         st.session_state[side] = True
 
-# Initialize default structured data for transitions as a list of dictionaries
 if 'transitions_list' not in st.session_state:
     st.session_state.transitions_list = [
         {"source": "Alive", "target": "Dead", "probability": 1.0}
     ]
+
+# For simulation page
+if 'loaded_config_name' not in st.session_state:
+    st.session_state.loaded_config_name = None
+if 'sim_results_df' not in st.session_state:
+    st.session_state.sim_results_df = None
+
+# --- Helper Functions for File Operations ---
+def ensure_dir(directory):
+    """Ensures a directory exists."""
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+def save_config(config_name, transitions_data):
+    """Saves the transitions data as a YAML file."""
+    ensure_dir(CONFIGS_DIR)
+    file_path = os.path.join(CONFIGS_DIR, f"{config_name}.yaml")
+    with open(file_path, 'w') as f:
+        yaml.dump(transitions_data, f, default_flow_style=False)
+    st.success(f"Configuration '{config_name}' saved successfully!")
+
+def load_config(config_name):
+    """Loads a configuration from a YAML file."""
+    file_path = os.path.join(CONFIGS_DIR, f"{config_name}.yaml")
+    if os.path.exists(file_path):
+        with open(file_path, 'r') as f:
+            data = yaml.safe_load(f)
+        return data
+    return None
+
+def get_available_configs():
+    """Returns a list of available configuration names."""
+    ensure_dir(CONFIGS_DIR)
+    return [f.replace('.yaml', '') for f in os.listdir(CONFIGS_DIR) if f.endswith('.yaml')]
+
+def save_results(results_df, filename_prefix="simulation_results"):
+    """Saves simulation results to a CSV file."""
+    ensure_dir(RESULTS_DIR)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_name = f"{filename_prefix}_{timestamp}.csv"
+    file_path = os.path.join(RESULTS_DIR, file_name)
+    results_df.to_csv(file_path, index=False)
+    st.success(f"Simulation results saved to '{file_name}' in '{RESULTS_DIR}'!")
+    return file_name
+
+def load_results(file_name):
+    """Loads simulation results from a CSV file."""
+    file_path = os.path.join(RESULTS_DIR, file_name)
+    if os.path.exists(file_path):
+        return pd.read_csv(file_path)
+    return None
+
+def get_available_results():
+    """Returns a list of available results file names."""
+    ensure_dir(RESULTS_DIR)
+    return [f for f in os.listdir(RESULTS_DIR) if f.endswith('.csv')]
+
+# --- Graphviz DOT Generation Function ---
+def generate_graphviz_dot(transitions, current_populations, initial_num_patients):
+    """Generates a Graphviz DOT string for the simulation model with current populations."""
+    # Changed 'rankdir' to 'LR' for Left-Right (horizontal) layout.
+    # Removed 'overlap' and 'splines' to let Graphviz use its defaults for potentially cleaner routing.
+    dot = graphviz.Digraph(
+        comment='Simulation Model',
+        graph_attr={
+            'rankdir': 'LR',  # Changed to Left-Right for horizontal layout
+            'forcelabels': 'true'
+        },
+        node_attr={
+            'fontsize': '8',     # Keep a reasonable small font size
+            'shape': 'ellipse'   # Ensure consistent node shape
+        },
+        edge_attr={
+            'fontsize': '7'      # Keep a reasonable small font size for edge labels
+        }
+    )
+
+    # Add 'Start' node (conceptual, no population)
+    dot.node('Start', label='Start')
+
+    # Add 'Alive' node with initial population
+    dot.node('Alive', label=f'Alive\n({current_populations.get("Alive", 0)} patients)')
+
+    # Add fixed transition from Start to Alive
+    dot.edge('Start', 'Alive', label=str(initial_num_patients))
+
+    # Add other nodes and edges based on transitions_list
+    all_nodes_in_transitions = set()
+    for t in transitions:
+        all_nodes_in_transitions.add(t["source"])
+        all_nodes_in_transitions.add(t["target"])
+
+    for node_name in all_nodes_in_transitions:
+        if node_name not in ['Start', 'Alive']:
+            dot.node(node_name, label=f'{node_name}\n({current_populations.get(node_name, 0)} patients)')
+
+    for t in transitions:
+        source_node = t["source"]
+        target_node = t["target"]
+        probability = t["probability"]
+
+        # This block is mostly redundant if all_nodes_in_transitions covers all, but kept for robustness
+        if source_node not in dot.body and source_node != 'Start' and source_node != 'Alive':
+             dot.node(source_node, label=f'{source_node}\n({current_populations.get(source_node, 0)} patients)')
+        if target_node not in dot.body and target_node != 'Start' and target_node != 'Alive':
+             dot.node(target_node, label=f'{target_node}\n({current_populations.get(target_node, 0)} patients)')
+
+        dot.edge(source_node, target_node, label=str(probability))
+
+    return dot.source
 
 # --- Toggle Functions ---
 def toggle_left():
@@ -28,11 +146,9 @@ def toggle_right():
     st.session_state.show_right = not st.session_state.show_right
 
 def add_transition_row():
-    """Adds an empty row to the transitions_list."""
     st.session_state.transitions_list.append({"source": "", "target": "", "probability": 0.0})
 
 def remove_last_transition_row():
-    """Removes the last row from the transitions_list, if any."""
     if st.session_state.transitions_list:
         st.session_state.transitions_list.pop()
 
@@ -63,39 +179,36 @@ if page == "Draw":
             gui, yaml_tab = st.tabs(["Mermaid Editor", "Setup YAML"])
 
             with gui:
-                st.text_input("Model Name", value="My Simulation Model")
-                num_patients = st.number_input("Initial Number of Patients", min_value=1, value=1000)
+                st.text_input("Model Name", value="My Simulation Model", key="draw_model_name")
+                num_patients = st.number_input("Initial Number of Patients", min_value=1, value=1000, key="draw_num_patients")
 
                 st.markdown("---")
 
                 st.subheader("✍️ Define Custom Transitions")
                 st.write("Add rows to define custom nodes and arrows. Probabilities for outgoing arrows from a node should sum to 1.0.")
 
-                # Use st.expander to contain the transition inputs and manage vertical space
                 with st.expander("Expand to define transitions", expanded=True):
-                    # Use a Streamlit container with custom CSS for scrolling
-                    # This ensures the widgets are correctly nested within the scrollable element.
-                    scrollable_container = st.container(height=350) # Set fixed height for the container
+                    # Using a Streamlit container with fixed height for internal scrolling
+                    scrollable_container = st.container(height=350)
 
                     with scrollable_container:
                         for i, transition in enumerate(st.session_state.transitions_list):
-                            # Use columns for a compact layout for each transition row
                             t_col1, t_col2, t_col3 = st.columns([1, 1, 0.8])
                             with t_col1:
                                 transition["source"] = st.text_input(
-                                    f"Source Node", # Simplified label
+                                    f"Source Node",
                                     value=transition.get("source", ""),
                                     key=f"source_{i}"
                                 )
                             with t_col2:
                                 transition["target"] = st.text_input(
-                                    f"Target Node", # Simplified label
+                                    f"Target Node",
                                     value=transition.get("target", ""),
                                     key=f"target_{i}"
                                 )
                             with t_col3:
                                 transition["probability"] = st.number_input(
-                                    f"Probability", # Simplified label
+                                    f"Probability",
                                     value=transition.get("probability", 0.0),
                                     min_value=0.0,
                                     max_value=1.0,
@@ -103,12 +216,9 @@ if page == "Draw":
                                     step=0.01,
                                     key=f"prob_{i}"
                                 )
-                            # Add a very subtle separator unless it's the very last one
                             if i < len(st.session_state.transitions_list) -1:
-                                st.markdown('<hr style="margin: 5px 0;">', unsafe_allow_html=True) # Smaller margin for separator
+                                st.markdown('<hr style="margin: 5px 0;">', unsafe_allow_html=True)
 
-
-                # Buttons to add/remove rows outside the expander/scrollable container
                 btn_col1, btn_col2 = st.columns([0.2, 1])
                 with btn_col1:
                     st.button("➕ Add Transition", on_click=add_transition_row)
@@ -121,30 +231,31 @@ if page == "Draw":
                 mermaid_lines.append(f'    Start -- [{num_patients}] --> Alive;')
 
                 probabilities_by_source = {}
-                user_mermaid_code = ""
+                user_mermaid_code = "graph TD\n    No_Transitions_Yet; "
 
-                for transition in st.session_state.transitions_list:
-                    source = transition.get("source")
-                    target = transition.get("target")
-                    probability = transition.get("probability")
+                if st.session_state.transitions_list:
+                    for transition in st.session_state.transitions_list:
+                        source = transition.get("source")
+                        target = transition.get("target")
+                        probability = transition.get("probability")
 
-                    if not source or not target:
-                        continue
+                        if not source or not target:
+                            continue
 
-                    arrow_label = ""
-                    if isinstance(probability, (int, float)):
-                        arrow_label = f' -- [{probability}] -->'
-                    else:
-                        arrow_label = " -->"
+                        arrow_label = ""
+                        if isinstance(probability, (int, float)):
+                            arrow_label = f' -- [{probability}] -->'
+                        else:
+                            arrow_label = " -->"
 
-                    mermaid_lines.append(f'    {source} {arrow_label} {target};')
+                        mermaid_lines.append(f'    {source} {arrow_label} {target};')
 
-                    if isinstance(probability, (int, float)):
-                        if source not in probabilities_by_source:
-                            probabilities_by_source[source] = []
-                        probabilities_by_source[source].append(probability)
+                        if isinstance(probability, (int, float)):
+                            if source not in probabilities_by_source:
+                                probabilities_by_source[source] = []
+                            probabilities_by_source[source].append(probability)
+                    user_mermaid_code = "\n".join(mermaid_lines)
 
-                user_mermaid_code = "\n".join(mermaid_lines)
 
                 # --- Validation Check for Probabilities ---
                 st.markdown("---")
@@ -157,6 +268,28 @@ if page == "Draw":
                         has_warnings = True
                 if not has_warnings:
                     st.success("All probabilities sum to 1.0 (or no probabilities found).")
+
+                # --- Save Configuration ---
+                st.markdown("---")
+                st.subheader("💾 Save Configuration")
+                config_save_name = st.text_input("Configuration Name", key="config_save_name")
+                save_button_clicked = st.button("Save Configuration", key="save_config_btn")
+
+                if save_button_clicked and config_save_name:
+                    if config_save_name + ".yaml" in os.listdir(CONFIGS_DIR):
+                        st.warning(f"Configuration '{config_save_name}' already exists.")
+                        overwrite_confirm = st.checkbox("Overwrite existing configuration?", key="overwrite_config")
+                        if overwrite_confirm:
+                            save_config(config_save_name, st.session_state.transitions_list)
+                            st.session_state.overwrite_confirmed = True # Set a flag
+                            st.rerun() # Rerun to clear checkbox
+                    else:
+                        save_config(config_save_name, st.session_state.transitions_list)
+                        st.session_state.overwrite_confirmed = False # Reset flag
+                        st.rerun() # Rerun to clear input
+                elif save_button_clicked and not config_save_name:
+                    st.error("Please enter a configuration name.")
+
 
                 st.download_button(
                     label="Download Generated Mermaid Code",
@@ -188,23 +321,19 @@ if page == "Draw":
                     mermaid.initialize({{ startOnLoad: true }});
                 </script>
                 <style>
-                    /* Ensure html and body take full height of the iframe */
                     html, body {{
                         height: 100%;
                         margin: 0;
                         padding: 0;
-                        /* Use hidden for body to ensure iframe itself handles scroll */
-                        overflow: hidden; 
+                        overflow: hidden;
                     }}
                     .mermaid {{
                         font-family: 'trebuchet ms', verdana, arial;
                         width: 100%;
-                        height: 100%; /* Make mermaid div fill its parent (body/html) */
-                        /* Changed to 'block' and `text-align: center` to center horizontally
-                           without interfering with vertical scrolling. */
+                        height: 100%;
                         display: block;
                         text-align: center; /* Centers inline-block children (like the SVG output by Mermaid) */
-                        overflow: auto; /* Make content scrollable if it overflows its fixed height */
+                        overflow: auto;
                     }}
                 </style>
             </head>
@@ -215,12 +344,173 @@ if page == "Draw":
             </body>
             </html>
             """
-            # The iframe itself is made scrollable if its content (the HTML above) overflows
             components.html(html_content, height=600, scrolling=True)
 
             st.markdown("---")
             st.info("This panel now displays the real-time visualization of your Mermaid.js diagram.")
 
+# --- Simulate Page Logic ---
 elif page == "Simulate":
-    st.subheader("📊 Simulation Output")
-    st.info("Results will appear here based on the configured model.")
+    st.header("🔬 Run Simulation")
+
+    sim_tab1, sim_tab2, sim_tab3 = st.tabs(["Load Configuration", "Run Simulation", "Results"])
+
+    with sim_tab1:
+        st.subheader("📂 Load Simulation Configuration")
+        available_configs = get_available_configs()
+        if available_configs:
+            selected_config = st.selectbox(
+                "Select a saved configuration:",
+                options=[""] + available_configs, # Add empty option
+                key="simulate_config_selector"
+            )
+            if selected_config:
+                loaded_data = load_config(selected_config)
+                if loaded_data:
+                    st.session_state.loaded_transitions = loaded_data # Store loaded data
+                    st.session_state.loaded_config_name = selected_config
+                    st.success(f"Configuration '{selected_config}' loaded successfully!")
+                    st.subheader("Loaded Configuration Details (YAML):")
+                    st.code(yaml.dump(loaded_data, default_flow_style=False), language="yaml")
+                else:
+                    st.error(f"Failed to load configuration '{selected_config}'.")
+            else:
+                st.info("Please select a configuration to load.")
+        else:
+            st.warning("No saved configurations found. Go to 'Draw' tab to save one.")
+
+    with sim_tab2:
+        st.subheader("🚀 Run Simulation")
+        if st.session_state.loaded_config_name:
+            st.info(f"Using configuration: **{st.session_state.loaded_config_name}**")
+            
+            # Simulation parameters
+            sim_initial_patients = st.number_input("Initial Patients for Simulation", min_value=1, value=1000, key="sim_initial_patients")
+            sim_steps = st.number_input("Number of Simulation Steps (Time Units)", min_value=1, value=10, key="sim_steps")
+            sim_speed = st.slider("Simulation Speed (seconds per step)", min_value=0.0, max_value=1.0, value=0.1, step=0.05, key="sim_speed")
+            
+            run_simulation_button = st.button("Start Simulation", key="run_simulation_btn")
+
+            if run_simulation_button:
+                st.write("---")
+                st.subheader("Live Simulation Progress")
+                
+                # Determine all unique states involved in the transitions
+                all_sim_nodes = set()
+                for t in st.session_state.loaded_transitions:
+                    all_sim_nodes.add(t["source"])
+                    all_sim_nodes.add(t["target"])
+                
+                # Initialize state populations
+                current_populations = {node: 0 for node in all_sim_nodes}
+                current_populations['Alive'] = sim_initial_patients # Assume 'Alive' is the initial state from 'Start' node
+                if 'Start' in current_populations: # 'Start' is conceptual for the diagram, remove from population tracking
+                    del current_populations['Start']
+                
+                # Ensure all nodes are sorted for consistent DataFrame columns
+                sorted_sim_nodes = sorted(list(current_populations.keys()))
+
+                # Create a DataFrame to store historical populations
+                history_df = pd.DataFrame(columns=['Step'] + sorted_sim_nodes)
+                history_df.loc[0] = [0] + [current_populations[s] for s in sorted_sim_nodes]
+
+
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                # Initialize the Graphviz display area once
+                graph_display_area = st.empty() 
+
+                for step in range(1, sim_steps + 1):
+                    new_populations = current_populations.copy()
+                    
+                    # Calculate net changes for each state based on transitions
+                    inflows_per_state = {node: 0 for node in sorted_sim_nodes}
+                    outflows_per_state = {node: 0 for node in sorted_sim_nodes}
+
+                    for transition in st.session_state.loaded_transitions:
+                        source = transition["source"]
+                        target = transition["target"]
+                        probability = transition["probability"]
+
+                        if source in current_populations and current_populations[source] > 0:
+                            num_moving = round(current_populations[source] * probability)
+                            
+                            outflows_per_state[source] += num_moving
+                            inflows_per_state[target] += num_moving
+                    
+                    # Apply all calculated changes for the step
+                    for node in sorted_sim_nodes:
+                        new_populations[node] = current_populations[node] + inflows_per_state.get(node, 0) - outflows_per_state.get(node, 0)
+                        new_populations[node] = max(0, new_populations[node])
+
+                    current_populations = new_populations # Update populations for next step
+
+                    # Update history
+                    history_df.loc[step] = [step] + [current_populations[s] for s in sorted_sim_nodes]
+                    
+                    # Update UI
+                    progress_bar.progress(step / sim_steps)
+                    status_text.text(f"Simulating Step {step}/{sim_steps}...")
+                    
+                    # Generate and update Graphviz diagram in the placeholder
+                    dot_source = generate_graphviz_dot(
+                        transitions=st.session_state.loaded_transitions,
+                        current_populations=current_populations,
+                        initial_num_patients=sim_initial_patients
+                    )
+                    # Update the content of the pre-allocated empty container
+                    graph_display_area.graphviz_chart(dot_source, use_container_width=True)
+                    
+                    time.sleep(sim_speed) # Control simulation speed
+
+                status_text.success("Simulation Complete!")
+                st.session_state.sim_results_df = history_df # Store final results
+                saved_file_name = save_results(history_df, filename_prefix=f"{st.session_state.loaded_config_name}_sim_results")
+                
+                st.markdown(f"**Final State Populations:**")
+                st.dataframe(pd.DataFrame([current_populations]))
+
+
+        else:
+            st.info("Please load a configuration in the 'Load Configuration' tab to run a simulation.")
+
+    with sim_tab3:
+        st.subheader("📄 Simulation Results")
+        available_results = get_available_results()
+        if available_results:
+            selected_result_file = st.selectbox(
+                "Select a results file to inspect:",
+                options=[""] + available_configs,
+                key="inspect_results_selector"
+            )
+            if selected_result_file:
+                df_to_display = load_results(selected_result_file)
+                if df_to_display is not None:
+                    st.dataframe(df_to_display, use_container_width=True)
+                    
+                    csv_data = df_to_display.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="Download CSV",
+                        data=csv_data,
+                        file_name=selected_result_file,
+                        mime="text/csv",
+                        key="download_results_btn"
+                    )
+                else:
+                    st.error(f"Failed to load results from '{selected_result_file}'.")
+            else:
+                st.info("Select a results file from the dropdown to view its content.")
+        elif st.session_state.sim_results_df is not None:
+            st.info("No saved results found, but current simulation results are available:")
+            st.dataframe(st.session_state.sim_results_df, use_container_width=True)
+            csv_data = st.session_state.sim_results_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="Download Current Simulation Results",
+                data=csv_data,
+                file_name=f"{st.session_state.loaded_config_name}_current_sim_results.csv",
+                mime="text/csv",
+                key="download_current_results_btn"
+            )
+        else:
+            st.warning("No simulation results available yet. Run a simulation in the 'Run Simulation' tab.")
