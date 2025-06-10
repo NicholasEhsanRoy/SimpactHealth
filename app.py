@@ -14,6 +14,9 @@ RESULTS_DIR = ".results"
 # --- Streamlit Page Configuration ---
 st.set_page_config(layout="wide", page_title="SimpactHealth")
 
+# --- Check if deployed on Streamlit Cloud ---
+IS_DEPLOYED_ON_STREAMLIT_CLOUD = os.getenv("STREAMLIT_CLOUD", "false").lower() == "true"
+
 # --- Sidebar ---
 st.sidebar.title("SimpactHealth")
 page = st.sidebar.radio("Menu", ["Draw", "Simulate"])
@@ -25,7 +28,7 @@ for side in ("show_left", "show_right"):
 
 if 'transitions_list' not in st.session_state:
     st.session_state.transitions_list = [
-        {"source": "Healthy", "target": "Dead", "probability": 1.0}
+        {"source": "Alive", "target": "Dead", "probability": 1.0}
     ]
 if 'draw_model_name' not in st.session_state:
     st.session_state.draw_model_name = "My Simulation Model"
@@ -54,19 +57,24 @@ if 'custom_result_name' not in st.session_state:
 # --- Helper Functions for File Operations ---
 def ensure_dir(directory):
     """Ensures a directory exists."""
+    # This function is now mostly for local development clarity.
+    # On Streamlit Cloud, direct file saving is disabled.
     if not os.path.exists(directory):
         os.makedirs(directory)
 
 def save_config(config_name, config_data): # Now accepts a dictionary
-    """Saves the configuration data as a YAML file."""
+    """Saves the configuration data as a YAML file locally.
+    This function will not be called when deployed on Streamlit Cloud."""
     ensure_dir(CONFIGS_DIR)
     file_path = os.path.join(CONFIGS_DIR, f"{config_name}.yaml")
     with open(file_path, 'w') as f:
         yaml.dump(config_data, f, default_flow_style=False)
-    st.success(f"Configuration '{config_name}' saved successfully!")
+    st.success(f"Configuration '{config_name}' saved successfully to local disk!")
 
 def load_config(config_name):
-    """Loads a configuration from a YAML file."""
+    """Loads a configuration from a YAML file locally.
+    This function will only work for configs pre-existing in the deployed bundle
+    or for local development."""
     file_path = os.path.join(CONFIGS_DIR, f"{config_name}.yaml")
     if os.path.exists(file_path):
         with open(file_path, 'r') as f:
@@ -75,15 +83,14 @@ def load_config(config_name):
     return None
 
 def get_available_configs():
-    """Returns a list of available configuration names."""
+    """Returns a list of available configuration names from local disk."""
     ensure_dir(CONFIGS_DIR)
     return [f.replace('.yaml', '') for f in os.listdir(CONFIGS_DIR) if f.endswith('.yaml')]
 
 def save_results(results_df, filename_prefix="simulation_results"):
     """
-    Saves simulation results to a CSV file.
-    Uses custom_result_name as filename if provided, otherwise uses a timestamped default.
-    """
+    Saves simulation results to a CSV file locally.
+    This function will not be called when deployed on Streamlit Cloud."""
     ensure_dir(RESULTS_DIR)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
@@ -96,18 +103,20 @@ def save_results(results_df, filename_prefix="simulation_results"):
 
     file_path = os.path.join(RESULTS_DIR, file_name)
     results_df.to_csv(file_path, index=False)
-    st.success(f"Simulation results saved to '{file_name}' in '{RESULTS_DIR}'!")
+    st.success(f"Simulation results saved to '{file_name}' to local disk!")
     return file_name
 
 def load_results(file_name):
-    """Loads simulation results from a CSV file."""
+    """Loads simulation results from a CSV file locally.
+    This will only work for results pre-existing in the deployed bundle
+    or for local development."""
     file_path = os.path.join(RESULTS_DIR, file_name)
     if os.path.exists(file_path):
         return pd.read_csv(file_path)
     return None
 
 def get_available_results():
-    """Returns a list of available results file names."""
+    """Returns a list of available results file names from local disk."""
     ensure_dir(RESULTS_DIR)
     return [f for f in os.listdir(RESULTS_DIR) if f.endswith('.csv')]
 
@@ -132,11 +141,11 @@ def generate_graphviz_dot(transitions, current_populations, initial_num_patients
     # Add 'Start' node (conceptual, no population)
     dot.node('Start', label='Start')
 
-    # Add 'Healthy' node with initial population
-    dot.node('Healthy', label=f'Healthy\n({current_populations.get("Healthy", 0)} patients)')
+    # Add 'Alive' node with initial population
+    dot.node('Alive', label=f'Alive\n({current_populations.get("Alive", 0)} patients)')
 
-    # Add fixed transition from Start to Healthy
-    dot.edge('Start', 'Healthy', label=str(initial_num_patients))
+    # Add fixed transition from Start to Alive
+    dot.edge('Start', 'Alive', label=str(initial_num_patients))
 
     # Add other nodes and edges based on transitions_list
     all_nodes_in_transitions = set()
@@ -145,7 +154,7 @@ def generate_graphviz_dot(transitions, current_populations, initial_num_patients
         all_nodes_in_transitions.add(t["target"])
 
     for node_name in all_nodes_in_transitions:
-        if node_name not in ['Start', 'Healthy']:
+        if node_name not in ['Start', 'Alive']:
             dot.node(node_name, label=f'{node_name}\n({current_populations.get(node_name, 0)} patients)')
 
     for t in transitions:
@@ -153,9 +162,9 @@ def generate_graphviz_dot(transitions, current_populations, initial_num_patients
         target_node = t["target"]
         probability = t["probability"]
 
-        if source_node not in dot.body and source_node != 'Start' and source_node != 'Healthy':
+        if source_node not in dot.body and source_node != 'Start' and source_node != 'Alive':
              dot.node(source_node, label=f'{source_node}\n({current_populations.get(source_node, 0)} patients)')
-        if target_node not in dot.body and target_node != 'Start' and target_node != 'Healthy':
+        if target_node not in dot.body and target_node != 'Start' and target_node != 'Alive':
              dot.node(target_node, label=f'{current_populations.get(target_node, 0)} patients)')
 
         dot.edge(source_node, target_node, label=str(probability))
@@ -185,7 +194,7 @@ def load_config_into_draw_action(): # This function is now called by a button
             if isinstance(loaded_data, dict):
                 st.session_state.draw_model_name = loaded_data.get("model_name", "My Simulation Model")
                 st.session_state.draw_num_patients = loaded_data.get("initial_patients", 1000)
-                st.session_state.transitions_list = loaded_data.get("transitions", [{"source": "Healthy", "target": "Dead", "probability": 1.0}])
+                st.session_state.transitions_list = loaded_data.get("transitions", [{"source": "Alive", "target": "Dead", "probability": 1.0}])
                 st.session_state.timestep_unit = loaded_data.get("timestep_unit", "Week")
             elif isinstance(loaded_data, list):
                 st.warning("Loaded an old configuration format. Defaulting model name, people, and timestep.")
@@ -279,7 +288,7 @@ def apply_uploaded_config_action():
             if isinstance(config_data, dict):
                 st.session_state.draw_model_name = config_data.get("model_name", "My Uploaded Model")
                 st.session_state.draw_num_patients = config_data.get("initial_patients", 1000)
-                st.session_state.transitions_list = config_data.get("transitions", [{"source": "Healthy", "target": "Dead", "probability": 1.0}])
+                st.session_state.transitions_list = config_data.get("transitions", [{"source": "Alive", "target": "Dead", "probability": 1.0}])
                 st.session_state.timestep_unit = config_data.get("timestep_unit", "Week")
                 st.success(f"Configuration from '{st.session_state.uploaded_file_name}' applied successfully!")
             elif isinstance(config_data, list):
@@ -304,7 +313,7 @@ def apply_uploaded_config_action():
 if page == "Draw":
     # --- Mermaid Code Generation (moved to global scope within Draw page) ---
     mermaid_lines = ["graph TD"]
-    mermaid_lines.append(f'    Start -- [{st.session_state.draw_num_patients}] --> Healthy;')
+    mermaid_lines.append(f'    Start -- [{st.session_state.draw_num_patients}] --> Alive;')
 
     probabilities_by_source = {}
     
@@ -411,29 +420,33 @@ if page == "Draw":
                 # --- Save Configuration ---
                 st.markdown("---")
                 st.subheader("💾 Save Configuration")
-                config_save_name = st.text_input("Configuration Name", key="config_save_name")
-                save_button_clicked = st.button("Save Configuration", key="save_config_btn")
+                # Only show save option if not deployed on Streamlit Cloud
+                if not IS_DEPLOYED_ON_STREAMLIT_CLOUD:
+                    config_save_name = st.text_input("Configuration Name", key="config_save_name")
+                    save_button_clicked = st.button("Save Configuration", key="save_config_btn")
 
-                if save_button_clicked and config_save_name:
-                    config_data_to_save = {
-                        "model_name": st.session_state.draw_model_name,
-                        "initial_patients": st.session_state.draw_num_patients,
-                        "transitions": st.session_state.transitions_list,
-                        "timestep_unit": st.session_state.timestep_unit
-                    }
-                    if config_save_name + ".yaml" in os.listdir(CONFIGS_DIR):
-                        st.warning(f"Configuration '{config_save_name}' already exists.")
-                        overwrite_confirm = st.checkbox("Overwrite existing configuration?", key="overwrite_config")
-                        if overwrite_confirm:
+                    if save_button_clicked and config_save_name:
+                        config_data_to_save = {
+                            "model_name": st.session_state.draw_model_name,
+                            "initial_patients": st.session_state.draw_num_patients,
+                            "transitions": st.session_state.transitions_list,
+                            "timestep_unit": st.session_state.timestep_unit
+                        }
+                        if config_save_name + ".yaml" in os.listdir(CONFIGS_DIR):
+                            st.warning(f"Configuration '{config_save_name}' already exists.")
+                            overwrite_confirm = st.checkbox("Overwrite existing configuration?", key="overwrite_config")
+                            if overwrite_confirm:
+                                save_config(config_save_name, config_data_to_save)
+                                st.session_state.overwrite_confirmed = True # Set a flag
+                                st.rerun() # Rerun to clear checkbox
+                        else:
                             save_config(config_save_name, config_data_to_save)
-                            st.session_state.overwrite_confirmed = True # Set a flag
-                            st.rerun() # Rerun to clear checkbox
-                    else:
-                        save_config(config_save_name, config_data_to_save)
-                        st.session_state.overwrite_confirmed = False # Reset flag
-                        st.rerun() # Rerun to clear input
-                elif save_button_clicked and not config_save_name:
-                    st.error("Please enter a configuration name.")
+                            st.session_state.overwrite_confirmed = False # Reset flag
+                            st.rerun() # Rerun to clear input
+                    elif save_button_clicked and not config_save_name:
+                        st.error("Please enter a configuration name.")
+                else:
+                    st.info("Local configuration saving is disabled on Streamlit Cloud. Please use Download functionality.")
                 
                 st.markdown("---")
                 st.subheader("⬇️ Download Configuration")
@@ -575,27 +588,32 @@ elif page == "Simulate":
 
     with sim_tab1:
         st.subheader("📂 Load Simulation Configuration")
-        available_configs = get_available_configs()
-        if available_configs:
-            selected_config = st.selectbox(
-                "Select a saved configuration:",
-                options=[""] + available_configs, # Add empty option
-                key="simulate_config_selector"
-            )
-            if selected_config:
-                loaded_data = load_config(selected_config)
-                if loaded_data:
-                    st.session_state.loaded_config_data = loaded_data # Store full config data
-                    st.session_state.loaded_config_name = selected_config
-                    st.success(f"Configuration '{selected_config}' loaded successfully!")
-                    st.subheader("Loaded Configuration Details (YAML):")
-                    st.code(yaml.dump(loaded_data, default_flow_style=False), language="yaml")
+        # Local config loading is disabled on Streamlit Cloud, so this part needs to reflect that
+        if not IS_DEPLOYED_ON_STREAMLIT_CLOUD:
+            available_configs = get_available_configs()
+            if available_configs:
+                selected_config = st.selectbox(
+                    "Select a saved configuration (Local Only):", # Updated label
+                    options=[""] + available_configs, # Add empty option
+                    key="simulate_config_selector"
+                )
+                if selected_config:
+                    loaded_data = load_config(selected_config)
+                    if loaded_data:
+                        st.session_state.loaded_config_data = loaded_data # Store full config data
+                        st.session_state.loaded_config_name = selected_config
+                        st.success(f"Configuration '{selected_config}' loaded successfully from local disk!")
+                        st.subheader("Loaded Configuration Details (YAML):")
+                        st.code(yaml.dump(loaded_data, default_flow_style=False), language="yaml")
+                    else:
+                        st.error(f"Failed to load configuration '{selected_config}'.")
                 else:
-                    st.error(f"Failed to load configuration '{selected_config}'.")
+                    st.info("No saved configurations found locally. Please upload or create one.")
             else:
-                st.info("Please select a configuration to load.")
+                st.warning("No saved configurations found locally. Go to 'Draw' tab to save one (local development) or use Upload/Download on Streamlit Cloud.")
         else:
-            st.warning("No saved configurations found. Go to 'Draw' tab to save one.")
+            st.info("Local configuration loading is disabled on Streamlit Cloud. Please use the Upload feature in the 'Draw' tab to load configurations.")
+
 
     with sim_tab2:
         st.subheader("🚀 Run Simulation")
@@ -607,7 +625,7 @@ elif page == "Simulate":
                 "Custom Results File Name (optional)",
                 value=st.session_state.custom_result_name,
                 key="custom_result_name",
-                help="Enter a name for your results file. If left empty, a default name with timestamp will be used."
+                help="Enter a name for your results file. If left empty, a default name with timestamp will be used. This will be the name of the downloaded file."
             )
 
             sim_initial_patients = st.number_input(
@@ -642,7 +660,7 @@ elif page == "Simulate":
                 
                 # Initialize state populations
                 current_populations = {node: 0 for node in all_sim_nodes}
-                current_populations['Healthy'] = sim_initial_patients # Assume 'Healthy' is the initial state from 'Start' node
+                current_populations['Alive'] = sim_initial_patients # Assume 'Alive' is the initial state from 'Start' node
                 if 'Start' in current_populations: # 'Start' is conceptual for the diagram, remove from population tracking
                     del current_populations['Start']
                 
@@ -706,7 +724,12 @@ elif page == "Simulate":
 
                 status_text.success("Simulation Complete!")
                 st.session_state.sim_results_df = history_df # Store final results
-                saved_file_name = save_results(history_df) # Pass custom name implicitly
+                
+                # Only save results to local disk if not deployed on Streamlit Cloud
+                if not IS_DEPLOYED_ON_STREAMLIT_CLOUD:
+                    saved_file_name = save_results(history_df) # Pass custom name implicitly
+                else:
+                    st.info("Local results saving is disabled on Streamlit Cloud. Please use the 'Download CSV' button in 'Results' tab.")
                 
                 st.markdown(f"**Final State Populations:**")
                 st.dataframe(pd.DataFrame([current_populations]))
@@ -717,40 +740,57 @@ elif page == "Simulate":
 
     with sim_tab3:
         st.subheader("📄 Simulation Results")
-        available_results = get_available_results()
-        if available_results:
-            selected_result_file = st.selectbox(
-                "Select a results file to inspect:",
-                options=[""] + available_results,
-                key="inspect_results_selector"
-            )
-            if selected_result_file:
-                df_to_display = load_results(selected_result_file)
-                if df_to_display is not None:
-                    st.dataframe(df_to_display, use_container_width=True)
-                    
-                    csv_data = df_to_display.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="Download CSV",
-                        data=csv_data,
-                        file_name=selected_result_file,
-                        mime="text/csv",
-                        key="download_results_btn"
-                    )
-                else:
-                    st.error(f"Failed to load results from '{selected_result_file}'.")
+        # For deployed app, only show current results or provide download for them
+        if IS_DEPLOYED_ON_STREAMLIT_CLOUD:
+            if st.session_state.sim_results_df is not None:
+                st.info("Current simulation results:")
+                st.dataframe(st.session_state.sim_results_df, use_container_width=True)
+                csv_data = st.session_state.sim_results_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="Download Current Simulation Results CSV",
+                    data=csv_data,
+                    file_name=f"{st.session_state.loaded_config_name}_current_sim_results.csv",
+                    mime="text/csv",
+                    key="download_current_results_btn"
+                )
             else:
-                st.info("Select a results file from the dropdown to view its content.")
-        elif st.session_state.sim_results_df is not None:
-            st.info("No saved results found, but current simulation results are available:")
-            st.dataframe(st.session_state.sim_results_df, use_container_width=True)
-            csv_data = st.session_state.sim_results_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="Download Current Simulation Results",
-                data=csv_data,
-                file_name=f"{st.session_state.loaded_config_name}_current_sim_results.csv",
-                mime="text/csv",
-                key="download_current_results_btn"
-            )
-        else:
-            st.warning("No simulation results available yet. Run a simulation in the 'Run Simulation' tab.")
+                st.warning("No simulation results available yet. Run a simulation in the 'Run Simulation' tab.")
+                st.info("On Streamlit Cloud, previous results are not persisted. Please run a simulation to view results.")
+        else: # Local development behavior
+            available_results = get_available_results()
+            if available_results:
+                selected_result_file = st.selectbox(
+                    "Select a results file to inspect (Local Only):", # Updated label
+                    options=[""] + available_results,
+                    key="inspect_results_selector"
+                )
+                if selected_result_file:
+                    df_to_display = load_results(selected_result_file)
+                    if df_to_display is not None:
+                        st.dataframe(df_to_display, use_container_width=True)
+                        
+                        csv_data = df_to_display.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="Download CSV",
+                            data=csv_data,
+                            file_name=selected_result_file,
+                            mime="text/csv",
+                            key="download_results_btn"
+                        )
+                    else:
+                        st.error(f"Failed to load results from '{selected_result_file}'.")
+                else:
+                    st.info("Select a results file from the dropdown to view its content.")
+            elif st.session_state.sim_results_df is not None:
+                st.info("No saved results found locally, but current simulation results are available:")
+                st.dataframe(st.session_state.sim_results_df, use_container_width=True)
+                csv_data = st.session_state.sim_results_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="Download Current Simulation Results",
+                    data=csv_data,
+                    file_name=f"{st.session_state.loaded_config_name}_current_sim_results.csv",
+                    mime="text/csv",
+                    key="download_current_results_btn"
+                )
+            else:
+                st.warning("No simulation results available yet. Run a simulation in the 'Run Simulation' tab.")
