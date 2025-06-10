@@ -65,6 +65,9 @@ def ensure_dir(directory):
 def save_config(config_name, config_data): # Now accepts a dictionary
     """Saves the configuration data as a YAML file locally.
     This function will not be called when deployed on Streamlit Cloud."""
+    if IS_DEPLOYED_ON_STREAMLIT_CLOUD:
+        st.warning("Saving configurations to server disk is disabled on Streamlit Cloud. Please use the 'Download Current Configuration' button.")
+        return
     ensure_dir(CONFIGS_DIR)
     file_path = os.path.join(CONFIGS_DIR, f"{config_name}.yaml")
     with open(file_path, 'w') as f:
@@ -91,6 +94,9 @@ def save_results(results_df, filename_prefix="simulation_results"):
     """
     Saves simulation results to a CSV file locally.
     This function will not be called when deployed on Streamlit Cloud."""
+    if IS_DEPLOYED_ON_STREAMLIT_CLOUD:
+        st.warning("Saving results to server disk is disabled on Streamlit Cloud. Please use the 'Download CSV' button in the Results tab.")
+        return
     ensure_dir(RESULTS_DIR)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
@@ -387,23 +393,26 @@ if page == "Draw":
                 
                 st.markdown("---")
                 
-                # Load Existing Configuration
+                # Load Existing Configuration (Local Only)
                 st.subheader("📂 Load Existing Configuration")
-                available_configs_for_draw = get_available_configs()
-                load_col, button_col = st.columns([0.7, 0.3])
-                with load_col:
-                    if available_configs_for_draw:
-                        st.selectbox(
-                            "Select a saved configuration:",
-                            options=[""] + available_configs_for_draw,
-                            key="load_config_draw_selector_value" # Changed key to avoid direct on_change trigger
-                        )
-                    else:
-                        st.info("No saved configurations found. Create and save one below.")
-                with button_col:
-                    st.write("") # Spacer for alignment
-                    st.write("") # Spacer for alignment
-                    st.button("Load Config", on_click=load_config_into_draw_action)
+                if not IS_DEPLOYED_ON_STREAMLIT_CLOUD:
+                    available_configs_for_draw = get_available_configs()
+                    load_col, button_col = st.columns([0.7, 0.3])
+                    with load_col:
+                        if available_configs_for_draw:
+                            st.selectbox(
+                                "Select a saved configuration (Local Only):", # Updated label for clarity
+                                options=[""] + available_configs_for_draw,
+                                key="load_config_draw_selector_value"
+                            )
+                        else:
+                            st.info("No saved configurations found locally. Save one below or upload.")
+                    with button_col:
+                        st.write("") # Spacer for alignment
+                        st.write("") # Spacer for alignment
+                        st.button("Load Config", on_click=load_config_into_draw_action)
+                else:
+                    st.info("Local configuration loading is disabled on Streamlit Cloud. Please use the Upload feature.")
                 
                 st.markdown("---")
 
@@ -417,10 +426,9 @@ if page == "Draw":
                     key="timestep_unit"
                 )
 
-                # --- Save Configuration ---
+                # --- Save Configuration (Local Only) ---
                 st.markdown("---")
                 st.subheader("💾 Save Configuration")
-                # Only show save option if not deployed on Streamlit Cloud
                 if not IS_DEPLOYED_ON_STREAMLIT_CLOUD:
                     config_save_name = st.text_input("Configuration Name", key="config_save_name")
                     save_button_clicked = st.button("Save Configuration", key="save_config_btn")
@@ -593,7 +601,7 @@ elif page == "Simulate":
             available_configs = get_available_configs()
             if available_configs:
                 selected_config = st.selectbox(
-                    "Select a saved configuration (Local Only):", # Updated label
+                    "Select a saved configuration (Local Only):", # Updated label for clarity
                     options=[""] + available_configs, # Add empty option
                     key="simulate_config_selector"
                 )
@@ -746,10 +754,13 @@ elif page == "Simulate":
                 st.info("Current simulation results:")
                 st.dataframe(st.session_state.sim_results_df, use_container_width=True)
                 csv_data = st.session_state.sim_results_df.to_csv(index=False).encode('utf-8')
+                # Use the custom result name for download, or a default with loaded config name
+                download_file_name = st.session_state.custom_result_name.strip() + ".csv" if st.session_state.custom_result_name.strip() else f"{st.session_state.loaded_config_name}_current_sim_results.csv"
+
                 st.download_button(
                     label="Download Current Simulation Results CSV",
                     data=csv_data,
-                    file_name=f"{st.session_state.loaded_config_name}_current_sim_results.csv",
+                    file_name=download_file_name,
                     mime="text/csv",
                     key="download_current_results_btn"
                 )
